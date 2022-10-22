@@ -287,7 +287,7 @@ def generate_game_summary_scoresheet(db)
     f.puts('ALL SCORERS:')
     f.write
     f.write('Player'.ljust(name_length, ' '))
-    f.write(' | ')
+    f.write('| ')
     f.write('Score from guessing')
     f.write(' | ')
     f.write('Score from trickery')
@@ -299,7 +299,7 @@ def generate_game_summary_scoresheet(db)
 
     sorted_scores.each do |score|
       f.write(score[:player_name].ljust(name_length, ' '))
-      f.write(' | ')
+      f.write('| ')
       f.write(score[:score_from_guesses].to_s.rjust(19, ' '))
       f.write(' | ')
       f.write(score[:score_from_trickery].to_s.rjust(19, ' '))
