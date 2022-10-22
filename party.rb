@@ -9,7 +9,7 @@ def create_db
   db.execute 'CREATE TABLE IF NOT EXISTS players(name TEXT unique)'
   db.execute 'CREATE TABLE IF NOT EXISTS statements(player_id INT, statement TEXT unique, answer INT)'
   db.execute 'CREATE TABLE IF NOT EXISTS guesses(player_id INT, statement_id INT, guess INT)'
-  db.execute 'CREATE TABLE IF NOT EXISTS bonus_points(player_id INT, points INT)'
+  db.execute 'CREATE TABLE IF NOT EXISTS scores(player_id INT unique, guess_points INT, trick_points INT, bonus_points INT, total INT)'
   db
 end
 
@@ -30,7 +30,7 @@ def seed_db(db)
     db.execute q, player_id, statement, answer
 
     # seed bonus points
-    db.execute 'INSERT OR IGNORE INTO bonus_points (player_id, points) VALUES (?, 0)', player_id
+    db.execute 'INSERT OR IGNORE INTO scores (player_id, guess_points, trick_points, bonus_points, total) VALUES (?, 0, 0, 0, 0)', player_id
   end
 end
 
@@ -62,7 +62,7 @@ def print_player_bonus_points(db)
 
   players.each do |player|
     player_id = (db.execute 'SELECT rowid FROM players WHERE name=?', player['name'])[0]['rowid']
-    bonus_points = (db.execute 'SELECT points FROM bonus_points WHERE player_id=?', player_id)[0][0]
+    bonus_points = (db.execute 'SELECT bonus_points FROM scores WHERE player_id=?', player_id)[0][0]
 
     puts "#{player['rowid'].to_s.rjust(2, ' ')}: #{player['name'].ljust(name_length + 1, ' ')}: #{bonus_points}"
   end
@@ -138,13 +138,10 @@ def submit_player_bonus_points(db)
       player_id = id if player_exists
     end
 
-    # clear existing guesses for this player
-    db.execute 'DELETE FROM bonus_points WHERE player_id=?', player_id
-
     player_name = (db.execute 'SELECT name FROM players WHERE rowid=?', player_id)[0][0]
     print "Enter bonus points for #{player_name}: "
-    points = gets.chomp.to_i
-    db.execute 'INSERT INTO bonus_points (player_id, points) VALUES (?, ?)', player_id, points
+    bonus_points = gets.chomp.to_i
+    db.execute 'UPDATE scores SET bonus_points=? WHERE player_id=?', bonus_points, player_id
   end
 end
 
@@ -160,22 +157,17 @@ def mock_player_guesses(db)
 end
 
 def generate_player_scoresheet(db, player_id)
-  player = (db.execute 'SELECT * FROM players WHERE rowid=?', player_id)[0]
+  player = (db.execute 'SELECT rowid,* FROM players WHERE rowid=?', player_id)[0]
   player_name = player['name']
+  player_id = player['rowid']
   statements = db.execute 'SELECT rowid,* FROM statements'
   player_statements = db.execute 'SELECT rowid,* FROM statements WHERE player_id=?', player_id
 
-  scores = generate_scores(db)
-  sorted_top_scores = scores.sort_by { |score| score[:total_score] }.reverse
-  sorted_top_guessers = scores.sort_by { |score| score[:score_from_guesses] }.reverse
-  sorted_top_trickers = scores.sort_by { |score| score[:score_from_trickery] }.reverse
-  your_top_place = sorted_top_scores.find_index { |s| s[:player_name] == player_name } + 1
-  your_guesser_place = sorted_top_guessers.find_index { |s| s[:player_name] == player_name } + 1
-  your_tricker_place = sorted_top_trickers.find_index { |s| s[:player_name] == player_name } + 1
-
-  score_from_guesses = 0
-  score_from_trickery = 0
-  score_from_bonus_points = (db.execute 'SELECT points FROM bonus_points WHERE player_id=?', player_id)[0][0]
+  points = (db.execute 'SELECT * FROM scores WHERE player_id=?', player_id)[0]
+  guess_points = points['guess_points']
+  trick_points = points['trick_points']
+  bonus_points = points['bonus_points']
+  total_points = points['total']
 
   filename = "#{player['name'].gsub(/' '/, '').downcase}.txt"
   File.delete(filename) if File.exist?(filename)
@@ -194,7 +186,6 @@ def generate_player_scoresheet(db, player_id)
         db.execute 'SELECT guess FROM guesses WHERE player_id=? AND statement_id=?', player_id, statement_id
       )[0][0]
       guess = raw_guess == 1 ? 'TRUE' : 'FALSE'
-      score_from_guesses += 1 if guess == answer
       submitter_name = "#{source['name'].split(' ')[0]} #{source['name'].split[1][0]}"
 
       f.puts("#{statement['rowid'].to_s.rjust(2, '0')}: #{statement['statement']}")
@@ -212,7 +203,6 @@ def generate_player_scoresheet(db, player_id)
       wrong_guesses = (
         db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement_id, answer
       )[0][0]
-      score_from_trickery += wrong_guesses.to_i
       answer = statement['answer'] == '1' ? 'TRUE' : 'FALSE'
 
       f.puts("#{statement['rowid'].to_s.rjust(2, '0')}: #{statement['statement']}")
@@ -222,65 +212,63 @@ def generate_player_scoresheet(db, player_id)
 
     f.puts('=== SCORE ===')
     f.puts
-    f.puts("Bonus points: #{score_from_bonus_points}")
-    f.puts("Points from guesses: #{score_from_guesses} (##{your_guesser_place})")
-    f.puts("Points from trickery: #{score_from_trickery} (##{your_tricker_place})")
-    f.puts("Total score: #{score_from_guesses + score_from_trickery + score_from_bonus_points} (##{your_top_place})")
+    f.puts("Bonus points: #{bonus_points}")
+    f.puts("Points from guesses: #{guess_points}")
+    f.puts("Points from trickery: #{trick_points}")
+    f.puts("Total score: #{total_points}")
   end
 end
 
 def generate_scores(db)
   players = db.execute 'SELECT rowid,* FROM players '
 
-  scores = []
-
   players.each do |player|
-    player_name = player['name']
     player_id = player['rowid']
-    bonus_points = (db.execute 'SELECT points FROM bonus_points WHERE player_id=?', player_id)[0][0]
-    score_from_guesses = get_score_from_guesses(db, player['rowid'])
-    score_from_trickery = get_score_from_trickery(db, player['rowid'])
-    total_score = score_from_guesses + score_from_trickery + bonus_points
-    player_hash = {
-      player_name: player_name,
-      bonus_points: bonus_points,
-      score_from_guesses: score_from_guesses,
-      score_from_trickery: score_from_trickery,
-      total_score: total_score
-    }
-    scores.push(player_hash)
-  end
+    bonus_points = (db.execute 'SELECT bonus_points FROM scores WHERE player_id=?', player_id)[0][0]
+    guess_points = get_guess_points(db, player['rowid'])
+    trick_points = get_trick_points(db, player['rowid'])
+    total_score = guess_points + trick_points + bonus_points
 
-  scores
+    db.execute(
+      'UPDATE scores SET guess_points=?, trick_points=?, bonus_points=?, total=? WHERE player_id=?',
+      guess_points, trick_points, bonus_points, total_score, player_id
+    )
+  end
 end
 
 def generate_game_summary_scoresheet(db)
   name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0] + 1
 
-  scores = generate_scores(db)
-
-  sorted_scores = scores.sort_by { |score| score[:player_name] }
-  top_scorers = scores.sort_by { |score| score[:total_score] }.reverse[0, 3]
-  top_guessers = scores.sort_by { |score| score[:score_from_guesses] }.reverse[0, 3]
-  top_trickers = scores.sort_by { |score| score[:score_from_trickery] }.reverse[0, 3]
+  top_scorers = db.execute(
+    'SELECT name, player_id, total FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY total DESC LIMIT 3'
+  )
+  top_guessers = db.execute(
+    'SELECT name, player_id, guess_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY guess_points DESC LIMIT 3'
+  )
+  top_trickers = db.execute(
+    'SELECT name, player_id, trick_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY trick_points DESC LIMIT 3'
+  )
+  all_scores = db.execute(
+    'SELECT players.name, scores.* FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY players.name ASC'
+  )
 
   File.delete('scoresheet.txt') if File.exist?('scoresheet.txt')
   File.open('scoresheet.txt', 'w') do |f|
     f.puts('TOP SCORERS:')
     top_scorers.each do |player|
-      f.puts("#{player[:player_name].ljust(name_length, ' ')}: #{player[:total_score]}")
+      f.puts("#{player['name'].ljust(name_length, ' ')}: #{player['total']}")
     end
     f.puts
 
     f.puts('TOP GUESSERS:')
     top_guessers.each do |player|
-      f.puts("#{player[:player_name].ljust(name_length, ' ')}: #{player[:score_from_guesses]}")
+      f.puts("#{player['name'].ljust(name_length, ' ')}: #{player['guess_points']}")
     end
     f.puts
 
     f.puts('TOP TRICKERS:')
     top_trickers.each do |player|
-      f.puts("#{player[:player_name].ljust(name_length, ' ')}: #{player[:score_from_trickery]}")
+      f.puts("#{player['name'].ljust(name_length, ' ')}: #{player['trick_points']}")
     end
     f.puts
 
@@ -297,16 +285,16 @@ def generate_game_summary_scoresheet(db)
     f.write('Total Score')
     f.puts
 
-    sorted_scores.each do |score|
-      f.write(score[:player_name].ljust(name_length, ' '))
+    all_scores.each do |score|
+      f.write(score['name'].ljust(name_length, ' '))
       f.write('| ')
-      f.write(score[:score_from_guesses].to_s.rjust(19, ' '))
+      f.write(score['guess_points'].to_s.rjust(19, ' '))
       f.write(' | ')
-      f.write(score[:score_from_trickery].to_s.rjust(19, ' '))
+      f.write(score['trick_points'].to_s.rjust(19, ' '))
       f.write(' | ')
-      f.write(score[:bonus_points].to_s.rjust(12, ' '))
+      f.write(score['bonus_points'].to_s.rjust(12, ' '))
       f.write(' | ')
-      f.write(score[:total_score].to_s.rjust(11, ' '))
+      f.write(score['total'].to_s.rjust(11, ' '))
       f.puts
     end
   end
@@ -319,21 +307,21 @@ def generate_player_scoresheets(db)
   end
 end
 
-def get_score_from_guesses(db, player_id)
+def get_guess_points(db, player_id)
   statements = db.execute 'SELECT rowid,* FROM statements'
-  score_from_guesses = 0
+  guess_points = 0
   statements.each do |statement|
     statement_id = statement['rowid']
     guess = (
       db.execute 'SELECT guess FROM guesses WHERE player_id=? AND statement_id=?', player_id, statement_id
     )[0][0]
-    score_from_guesses += 1 if guess == statement['answer']
+    guess_points += 1 if guess == statement['answer']
   end
-  score_from_guesses
+  guess_points
 end
 
-def get_score_from_trickery(db, player_id)
-  score_from_trickery = 0
+def get_trick_points(db, player_id)
+  trick_points = 0
   player_statements = db.execute 'SELECT rowid,* FROM statements WHERE player_id=?', player_id
   player_statements.each do |statement|
     statement_id = statement['rowid']
@@ -341,26 +329,34 @@ def get_score_from_trickery(db, player_id)
     wrong_guesses = (
       db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement_id, answer
     )[0][0]
-    score_from_trickery += wrong_guesses.to_i
+    trick_points += wrong_guesses.to_i
   end
-  score_from_trickery
+  trick_points
 end
 
 db = create_db
 seed_db(db)
 
 loop do
+  highest_score = db.execute('SELECT total FROM scores ORDER BY total DESC LIMIT 1')[0][0]
+  scores_calculated = highest_score > 0
+
   puts ''
   puts 'What do you want to do?'
   puts '1: Print player statuses'
   puts '2: Fill in player guesses'
   puts '3: Fill in player bonus points'
-  puts '4: Generate game summary scoresheet'
-  puts '5: Generate player scoresheets'
-  puts '6: Mock player guesses'
+  puts '4: Calculate scores'
+  if scores_calculated
+    puts '5: Generate game summary scoresheet'
+    puts '6: Generate player scoresheets'
+  else
+    puts '7: Mock player guesses'
+  end
   print '> '
   input = gets.chomp.to_i
   puts ''
+
 
   case input
   when 1
@@ -370,11 +366,13 @@ loop do
   when 3
     submit_player_bonus_points(db)
   when 4
-    generate_game_summary_scoresheet(db)
+    generate_scores(db)
   when 5
-    generate_player_scoresheets(db)
+    generate_game_summary_scoresheet(db) if scores_calculated
   when 6
-    mock_player_guesses(db)
+    generate_player_scoresheets(db) if scores_calculated
+  when 7
+    mock_player_guesses(db) unless scores_calculated
   else
     puts 'What?'
   end
