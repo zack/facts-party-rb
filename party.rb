@@ -240,13 +240,13 @@ def generate_game_summary_scoresheet(db)
   name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0] + 1
 
   top_scorers = db.execute(
-    'SELECT name, player_id, total FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY total DESC LIMIT 3'
+    'SELECT name, player_id, total FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY total DESC LIMIT 5'
   )
   top_guessers = db.execute(
-    'SELECT name, player_id, guess_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY guess_points DESC LIMIT 3'
+    'SELECT name, player_id, guess_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY guess_points DESC LIMIT 5'
   )
   top_trickers = db.execute(
-    'SELECT name, player_id, trick_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY trick_points DESC LIMIT 3'
+    'SELECT name, player_id, trick_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY trick_points DESC LIMIT 5'
   )
   all_scores = db.execute(
     'SELECT players.name, scores.* FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY players.name ASC'
