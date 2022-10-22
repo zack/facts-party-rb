@@ -1,12 +1,6 @@
-# rubocop:disable Metrics
-# rubocop:disable Layout/LineLength
-# rubocop:disable Style/Next
-# rubocop:disable Style/WordArray
-
 require 'csv'
 require 'pry'
 require 'sqlite3'
-
 
 # idempotent
 def create_db
@@ -15,6 +9,7 @@ def create_db
   db.execute 'CREATE TABLE IF NOT EXISTS players(name TEXT unique)'
   db.execute 'CREATE TABLE IF NOT EXISTS statements(player_id INT, statement TEXT unique, answer INT)'
   db.execute 'CREATE TABLE IF NOT EXISTS guesses(player_id INT, statement_id INT, guess INT)'
+  db.execute 'CREATE TABLE IF NOT EXISTS bonus_points(player_id INT, points INT)'
   db
 end
 
@@ -31,7 +26,11 @@ def seed_db(db)
     # get the id of the player
     player_id = (db.execute 'SELECT rowid FROM players WHERE name=?', player)[0][0]
     # create the statement row
-    db.execute 'INSERT OR IGNORE INTO statements (player_id, statement, answer) VALUES (?, ?, ?)', player_id, statement, answer
+    q = 'INSERT OR IGNORE INTO statements (player_id, statement, answer) VALUES (?, ?, ?)'
+    db.execute q, player_id, statement, answer
+
+    # seed bonus points
+    db.execute 'INSERT OR IGNORE INTO bonus_points (player_id, points) VALUES (?, 0)', player_id
   end
 end
 
@@ -43,31 +42,39 @@ def insert_guess(db, player_id, statement_id, guess)
   db.execute 'INSERT INTO guesses (player_id, statement_id, guess) VALUES (?, ?, ?)', player_id, statement_id, guess
 end
 
-def print_player_statuses(db, guesses)
+def print_player_statuses(db)
   players = db.execute 'SELECT rowid,* from players'
-
   statement_count = (db.execute 'SELECT COUNT(*) from statements')[0][0]
+  name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0]
 
   players.each do |player|
-    # get the id of the player
-    player_id_hash = db.execute 'SELECT rowid FROM players WHERE name=?', player['name']
-    player_id = player_id_hash[0]['rowid']
-
+    player_id = (db.execute 'SELECT rowid FROM players WHERE name=?', player['name'])[0]['rowid']
     guesses_submitted = (db.execute 'SELECT COUNT(*) FROM guesses WHERE player_id=?', player_id)[0][0]
+    guess_string = generate_guesses_status(guesses_submitted, statement_count)
 
-    guess_string = if guesses_submitted == statement_count
-                     'ALL'
-                   elsif guesses_submitted.zero?
-                     'NONE'
-                   else
-                     guesses_submitted.to_s
-                   end
+    puts "#{player['rowid'].to_s.rjust(2, ' ')}: #{player['name'].ljust(name_length + 1, ' ')}: #{guess_string}"
+  end
+end
 
-    if guesses
-      puts "#{player['rowid'].to_s.rjust(2, ' ')}: #{player['name'].ljust(20, ' ')}: #{guess_string}"
-    else
-      puts "#{player['rowid'].to_s.rjust(2, ' ')}: #{player['name'].ljust(20, ' ')}"
-    end
+def print_player_bonus_points(db)
+  players = db.execute 'SELECT rowid,* from players'
+  name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0]
+
+  players.each do |player|
+    player_id = (db.execute 'SELECT rowid FROM players WHERE name=?', player['name'])[0]['rowid']
+    bonus_points = (db.execute 'SELECT points FROM bonus_points WHERE player_id=?', player_id)[0][0]
+
+    puts "#{player['rowid'].to_s.rjust(2, ' ')}: #{player['name'].ljust(name_length + 1, ' ')}: #{bonus_points}"
+  end
+end
+
+def generate_guesses_status(guesses_submitted, statement_count)
+  if guesses_submitted == statement_count
+    'ALL'
+  elsif guesses_submitted.zero?
+    'NONE'
+  else
+    guesses_submitted.to_s
   end
 end
 
@@ -83,11 +90,10 @@ def print_players_with_ids(db)
 end
 
 def submit_player_guesses(db)
-  # we will use this later
   statement_count = (db.execute 'SELECT COUNT(*) from statements')[0][0]
 
   loop do
-    print_player_statuses(db, true)
+    print_player_statuses(db)
 
     player_id = 0
     while player_id.zero?
@@ -117,6 +123,31 @@ def submit_player_guesses(db)
   end
 end
 
+def submit_player_bonus_points(db)
+  loop do
+    print_player_bonus_points(db)
+
+    player_id = 0
+    while player_id.zero?
+      print 'Enter a player id (0 to stop): '
+      id = gets.chomp.to_i
+
+      return if id.zero?
+
+      player_exists = (db.execute 'SELECT COUNT(*) FROM players WHERE rowid=?', id)[0][0] == 1
+      player_id = id if player_exists
+    end
+
+    # clear existing guesses for this player
+    db.execute 'DELETE FROM bonus_points WHERE player_id=?', player_id
+
+    player_name = (db.execute 'SELECT name FROM players WHERE rowid=?', player_id)[0][0]
+    print "Enter bonus points for #{player_name}: "
+    points = gets.chomp.to_i
+    db.execute 'INSERT INTO bonus_points (player_id, points) VALUES (?, ?)', player_id, points
+  end
+end
+
 def mock_player_guesses(db)
   players = db.execute 'SELECT rowid,* FROM players'
   statements = db.execute 'SELECT rowid,* FROM statements'
@@ -130,11 +161,21 @@ end
 
 def generate_player_scoresheet(db, player_id)
   player = (db.execute 'SELECT * FROM players WHERE rowid=?', player_id)[0]
+  player_name = player['name']
   statements = db.execute 'SELECT rowid,* FROM statements'
   player_statements = db.execute 'SELECT rowid,* FROM statements WHERE player_id=?', player_id
 
+  scores = generate_scores(db)
+  sorted_top_scores = scores.sort_by { |score| score[:total_score] }.reverse
+  sorted_top_guessers = scores.sort_by { |score| score[:score_from_guesses] }.reverse
+  sorted_top_trickers = scores.sort_by { |score| score[:score_from_trickery] }.reverse
+  your_top_place = sorted_top_scores.find_index { |s| s[:player_name] == player_name } + 1
+  your_guesser_place = sorted_top_guessers.find_index { |s| s[:player_name] == player_name } + 1
+  your_tricker_place = sorted_top_trickers.find_index { |s| s[:player_name] == player_name } + 1
+
   score_from_guesses = 0
   score_from_trickery = 0
+  score_from_bonus_points = (db.execute 'SELECT points FROM bonus_points WHERE player_id=?', player_id)[0][0]
 
   filename = "#{player['name'].gsub(/' '/, '').downcase}.txt"
   File.delete(filename) if File.exist?(filename)
@@ -148,7 +189,10 @@ def generate_player_scoresheet(db, player_id)
     statements.each do |statement|
       source = (db.execute 'SELECT name FROM players WHERE rowid=?', statement['player_id'])[0]
       answer = statement['answer'] == 1 ? 'TRUE' : 'FALSE'
-      raw_guess = (db.execute 'SELECT guess FROM guesses WHERE player_id=? AND statement_id=?', player_id, statement['rowid'])[0][0]
+      statement_id = statement['rowid']
+      raw_guess = (
+        db.execute 'SELECT guess FROM guesses WHERE player_id=? AND statement_id=?', player_id, statement_id
+      )[0][0]
       guess = raw_guess == 1 ? 'TRUE' : 'FALSE'
       score_from_guesses += 1 if guess == answer
       submitter_name = "#{source['name'].split(' ')[0]} #{source['name'].split[1][0]}"
@@ -163,7 +207,11 @@ def generate_player_scoresheet(db, player_id)
     f.puts
 
     player_statements.each do |statement|
-      wrong_guesses = (db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement['rowid'], statement['answer'])[0][0]
+      statement_id = statement['rowid']
+      answer = statement['answer']
+      wrong_guesses = (
+        db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement_id, answer
+      )[0][0]
       score_from_trickery += wrong_guesses.to_i
       answer = statement['answer'] == '1' ? 'TRUE' : 'FALSE'
 
@@ -174,31 +222,42 @@ def generate_player_scoresheet(db, player_id)
 
     f.puts('=== SCORE ===')
     f.puts
-    f.puts("Points from guesses: #{score_from_guesses} (#{get_score_from_guesses(db, player_id)})")
-    f.puts("Points from trickery: #{score_from_trickery} (#{get_score_from_trickery(db, player_id)})")
-    f.puts("Total score: #{score_from_guesses + score_from_trickery}")
+    f.puts("Bonus points: #{score_from_bonus_points}")
+    f.puts("Points from guesses: #{score_from_guesses} (##{your_guesser_place})")
+    f.puts("Points from trickery: #{score_from_trickery} (##{your_tricker_place})")
+    f.puts("Total score: #{score_from_guesses + score_from_trickery + score_from_bonus_points} (##{your_top_place})")
   end
 end
 
-def generate_game_summary_scoresheet(db)
-  name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0]
+def generate_scores(db)
   players = db.execute 'SELECT rowid,* FROM players '
 
   scores = []
 
   players.each do |player|
     player_name = player['name']
+    player_id = player['rowid']
+    bonus_points = (db.execute 'SELECT points FROM bonus_points WHERE player_id=?', player_id)[0][0]
     score_from_guesses = get_score_from_guesses(db, player['rowid'])
     score_from_trickery = get_score_from_trickery(db, player['rowid'])
-    total_score = score_from_guesses + score_from_trickery
+    total_score = score_from_guesses + score_from_trickery + bonus_points
     player_hash = {
       player_name: player_name,
+      bonus_points: bonus_points,
       score_from_guesses: score_from_guesses,
       score_from_trickery: score_from_trickery,
       total_score: total_score
     }
     scores.push(player_hash)
   end
+
+  scores
+end
+
+def generate_game_summary_scoresheet(db)
+  name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0] + 1
+
+  scores = generate_scores(db)
 
   sorted_scores = scores.sort_by { |score| score[:player_name] }
   top_scorers = scores.sort_by { |score| score[:total_score] }.reverse[0, 3]
@@ -233,6 +292,8 @@ def generate_game_summary_scoresheet(db)
     f.write(' | ')
     f.write('Score from trickery')
     f.write(' | ')
+    f.write('Bonus Points')
+    f.write(' | ')
     f.write('Total Score')
     f.puts
 
@@ -242,6 +303,8 @@ def generate_game_summary_scoresheet(db)
       f.write(score[:score_from_guesses].to_s.rjust(19, ' '))
       f.write(' | ')
       f.write(score[:score_from_trickery].to_s.rjust(19, ' '))
+      f.write(' | ')
+      f.write(score[:bonus_points].to_s.rjust(12, ' '))
       f.write(' | ')
       f.write(score[:total_score].to_s.rjust(11, ' '))
       f.puts
@@ -260,7 +323,10 @@ def get_score_from_guesses(db, player_id)
   statements = db.execute 'SELECT rowid,* FROM statements'
   score_from_guesses = 0
   statements.each do |statement|
-    guess = (db.execute 'SELECT guess FROM guesses WHERE player_id=? AND statement_id=?', player_id, statement['rowid'])[0][0]
+    statement_id = statement['rowid']
+    guess = (
+      db.execute 'SELECT guess FROM guesses WHERE player_id=? AND statement_id=?', player_id, statement_id
+    )[0][0]
     score_from_guesses += 1 if guess == statement['answer']
   end
   score_from_guesses
@@ -270,7 +336,11 @@ def get_score_from_trickery(db, player_id)
   score_from_trickery = 0
   player_statements = db.execute 'SELECT rowid,* FROM statements WHERE player_id=?', player_id
   player_statements.each do |statement|
-    wrong_guesses = (db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement['rowid'], statement['answer'])[0][0]
+    statement_id = statement['rowid']
+    answer = statement['answer']
+    wrong_guesses = (
+      db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement_id, answer
+    )[0][0]
     score_from_trickery += wrong_guesses.to_i
   end
   score_from_trickery
@@ -284,30 +354,28 @@ loop do
   puts 'What do you want to do?'
   puts '1: Print player statuses'
   puts '2: Fill in player guesses'
-  puts '3: Generate game summary scoresheet'
-  puts '4: Generate player scoresheets'
-  # puts '5: Mock player guesses'
+  puts '3: Fill in player bonus points'
+  puts '4: Generate game summary scoresheet'
+  puts '5: Generate player scoresheets'
+  puts '6: Mock player guesses'
   print '> '
   input = gets.chomp.to_i
   puts ''
 
   case input
   when 1
-    print_player_statuses(db, true)
+    print_player_statuses(db)
   when 2
     submit_player_guesses(db)
   when 3
-    generate_game_summary_scoresheet(db)
+    submit_player_bonus_points(db)
   when 4
+    generate_game_summary_scoresheet(db)
+  when 5
     generate_player_scoresheets(db)
-  # when 5
-  #   mock_player_guesses(db)
+  when 6
+    mock_player_guesses(db)
   else
     puts 'What?'
   end
 end
-
-# rubocop:enable Style/WordArray
-# rubocop:enable Style/Next
-# rubocop:enable Layout/LineLength
-# rubocop:enable Metrics
