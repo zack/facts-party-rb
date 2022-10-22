@@ -20,7 +20,7 @@ end
 
 # idempotent
 def seed_db(db)
-  CSV.foreach('facts.csv') do |row|
+  CSV.foreach('statements.csv') do |row|
     player = row[0]
     statement = row[1]
     answer = row[2] == 'TRUE' ? 1 : 0
