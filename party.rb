@@ -118,6 +118,8 @@ def submit_player_guesses(db)
           insert_guess(db, player_id, index + 1, guess)
         end
         break
+      else
+        puts("entered: #{guesses.length}, wanted: #{statement_count}")
       end
     end
   end
@@ -142,6 +144,8 @@ def submit_player_bonus_points(db)
     print "Enter bonus points for #{player_name}: "
     bonus_points = gets.chomp.to_i
     db.execute 'UPDATE scores SET bonus_points=? WHERE player_id=?', bonus_points, player_id
+    total = (db.execute 'SELECT total FROM points WHERE player_id=?', player_id)[0][0]
+    db.execute 'UPDATE scores SET total=? WHERE player_id=?', player_id, total+bonus_points
   end
 end
 
@@ -203,7 +207,7 @@ def generate_player_scoresheet(db, player_id)
       wrong_guesses = (
         db.execute 'SELECT COUNT(*) FROM guesses WHERE statement_id=? AND guess!=?', statement_id, answer
       )[0][0]
-      answer = statement['answer'] == '1' ? 'TRUE' : 'FALSE'
+      answer = statement['answer'] == 1 ? 'TRUE' : 'FALSE'
 
       f.puts("#{statement['rowid'].to_s.rjust(2, '0')}: #{statement['statement']}")
       f.puts("    Answer was #{answer}. You tricked: #{wrong_guesses} players")
@@ -240,16 +244,16 @@ def generate_game_summary_scoresheet(db)
   name_length = (db.execute 'SELECT LENGTH(name) FROM players ORDER BY LENGTH(name) DESC LIMIT 1')[0][0] + 1
 
   top_scorers = db.execute(
-    'SELECT name, player_id, total FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY total DESC LIMIT 5'
+    'SELECT name, player_id, total FROM scores INNER JOIN players ON players.rowid = scores.player_id ORDER BY total DESC LIMIT 5'
   )
   top_guessers = db.execute(
-    'SELECT name, player_id, guess_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY guess_points DESC LIMIT 5'
+    'SELECT name, player_id, guess_points FROM scores INNER JOIN players ON players.rowid = scores.player_id ORDER BY guess_points DESC LIMIT 5'
   )
   top_trickers = db.execute(
-    'SELECT name, player_id, trick_points FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY trick_points DESC LIMIT 5'
+    'SELECT name, player_id, trick_points FROM scores INNER JOIN players ON players.rowid = scores.player_id ORDER BY trick_points DESC LIMIT 5'
   )
   all_scores = db.execute(
-    'SELECT players.name, scores.* FROM scores INNER JOIN players ON players.rowid  = scores.player_id ORDER BY players.name ASC'
+    'SELECT players.name, scores.* FROM scores INNER JOIN players ON players.rowid = scores.player_id ORDER BY players.name ASC'
   )
 
   File.delete('scoresheet.txt') if File.exist?('scoresheet.txt')
